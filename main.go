@@ -6,15 +6,25 @@ import (
 	"flag"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
+	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/common/log"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/version"
 )
 
 const (
 	namespace = "twemproxy_exporter"
+)
+
+// logger mirrors the logfmt output of the retired
+// github.com/prometheus/common/log package: level=info msg=... source=...
+var logger = log.With(log.NewLogfmtLogger(log.NewSyncWriter(os.Stderr)),
+	"time", log.DefaultTimestampUTC,
+	"source", log.DefaultCaller,
 )
 
 func main() {
@@ -27,7 +37,8 @@ func main() {
 	flag.Parse()
 
 	if *twemproxyAddress == "" {
-		log.Fatalln("-twemproxy.stats-address must not be blank")
+		level.Error(logger).Log("msg", "-twemproxy.stats-address must not be blank")
+		os.Exit(1)
 	}
 
 	if *timeout == 0 {
@@ -36,7 +47,7 @@ func main() {
 
 	prometheus.MustRegister(newExporter(*twemproxyAddress, *timeout))
 
-	http.Handle(*metricsPath, prometheus.Handler())
+	http.Handle(*metricsPath, promhttp.Handler())
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html>
 		<head><title>Twemproxy Exporter</title></head>
@@ -47,10 +58,11 @@ func main() {
 		</html>`))
 	})
 
-	log.Infoln("starting twemproxy_exporter", version.Info())
-	log.Infoln("build context", version.BuildContext())
-	log.Infoln("listening on", *listenAddress)
-	log.Fatal(http.ListenAndServe(*listenAddress, nil))
+	level.Info(logger).Log("msg", "starting twemproxy_exporter", "version", version.Info())
+	level.Info(logger).Log("msg", "build context", "build_context", version.BuildContext())
+	level.Info(logger).Log("msg", "listening on", "address", *listenAddress)
+	level.Error(logger).Log("msg", http.ListenAndServe(*listenAddress, nil))
+	os.Exit(1)
 }
 
 type exporter struct {
@@ -235,7 +247,7 @@ func (e *exporter) Collect(ch chan<- prometheus.Metric) {
 	}()
 	st, err := e.collect()
 	if err != nil {
-		log.Infof("failed to collect stats: %v", err)
+		level.Info(logger).Log("msg", "failed to collect stats", "err", err)
 		return
 	}
 
@@ -274,7 +286,7 @@ func (e *exporter) collect() (*stats, error) {
 	// TODO: Reuse connection, connect with net.DialTCP?
 	conn, err := net.DialTimeout("tcp", e.endpoint, e.timeout)
 	if err != nil {
-		log.Errorf("failed to dial endpoint: %v", err)
+		level.Error(logger).Log("msg", "failed to dial endpoint", "err", err)
 		return nil, err
 	}
 	conn.SetReadDeadline(time.Now().Add(e.timeout))
@@ -284,7 +296,7 @@ func (e *exporter) collect() (*stats, error) {
 
 	st := new(stats)
 	if err := json.NewDecoder(r).Decode(st); err != nil {
-		log.Errorf("failed to unmarshal response: %v", err)
+		level.Error(logger).Log("msg", "failed to unmarshal response", "err", err)
 		return nil, err
 	}
 
